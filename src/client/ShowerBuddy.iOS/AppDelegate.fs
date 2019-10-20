@@ -13,7 +13,7 @@ type AppDelegate () =
 
     override this.FinishedLaunching (app, options) =
         Forms.Init()
-        let appcore = new ShowerBuddy.App()
+        let appcore = new ShowerBuddy.App(new AudioService())
         this.LoadApplication (appcore)
         base.FinishedLaunching(app, options)
 
