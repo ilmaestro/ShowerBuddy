@@ -15,3 +15,13 @@ Taking showers consumes hot water. Hot water is expensive. Knowing how much wate
 - Measure time using a stop watch
 - Measure time based on when the shower is turned on or off using the sound made
 - Measure time based on the show handle position
+
+## questions
+
+- how much water should I use to take a shower?
+- what happens if I only use the water 25% of the time I'm in the shower?
+- how much kWh does my water heater use to heat up the water I'm using in the shower?
+
+## other thoughts
+
+- set a goal of 25% water, the app tells you when to turn the water off
