@@ -9,86 +9,93 @@ open Xamarin.Forms
 open ShowerBuddy.Interfaces
 open ShowerBuddy.Domain
 open System.Collections.Generic
+open System
 
 module App = 
     type Model = 
-      { Count       : int
-        Step        : int
-        TimerOn     : bool
-        ErrorMsg    : string option }
+      { Volume          : int
+        CurrentSample   : SampleVolume
+        SamplerOn       : bool
+        ErrorMsg        : string option }
 
     type Msg = 
-        | Increment 
-        | Decrement 
         | Reset
-        | SetStep of int
-        | TimerToggled of bool
-        | TimedTick
-        | AverageDbReading of float
+        | SamplerToggled of bool
+        | ReceiveSample of SampleVolume
         | ShowError of string
 
-    let initModel = { Count = 0; Step = 1; TimerOn=false; ErrorMsg = None }
+    let initModel = { Volume = 0; CurrentSample = SampleVolume 0.; SamplerOn = false; ErrorMsg = None }
 
     let init () = initModel, Cmd.none
+    let mutable isSampling = false
 
-    let timerCmd (audioService: IAudioService) =
-        async {
-            let cancellationSource = new System.Threading.CancellationTokenSource(2000)
-            let samples = new List<int16>()
-            let collector buffer =
-                samples.AddRange(Array.toSeq buffer)
-            // start collecting samples
-            let! output = audioService.StartAnalyzer 100_000 collector (cancellationSource.Token)
-            match output with
-            | Ok () ->
-                let reading = samples |> Seq.sum
-                return AverageDbReading (float reading)
-            | Error msg ->
-                return ShowError msg
-            }
-        |> Cmd.ofAsyncMsg
+    let startSamplingCmd (audioSampler: IAudioSampler) =
+        Cmd.ofAsyncMsgOption (async {
+            if not isSampling then
+                isSampling <- true
+                do! Async.SwitchToThreadPool()
+                let! result = audioSampler.Start()
+                let msg =
+                    match result with
+                    | Ok () -> None
+                    | Error message -> Some (ShowError message)
 
+                return msg
+            else
+                return None
+        })
 
-    let update (audioService: IAudioService) msg model =
+    let stopSamplingCmd (audioSampler: IAudioSampler) =
+        Cmd.ofAsyncMsgOption (async { 
+            let msg =
+                match audioSampler.Stop() with
+                | Ok () -> None
+                | Error message -> Some (ShowError message)
+            isSampling <- false
+            return msg
+        })
+
+    let update (audioSampler: IAudioSampler) msg model =
         match msg with
-        | Increment -> { model with Count = model.Count + model.Step }, Cmd.none
-        | Decrement -> { model with Count = model.Count - model.Step }, Cmd.none
         | Reset -> init ()
-        | SetStep n -> { model with Step = n }, Cmd.none
-        | TimerToggled on -> { model with TimerOn = on }, (if on then (timerCmd audioService) else Cmd.none)
-        | TimedTick -> 
-            if model.TimerOn then 
-                { model with Count = model.Count + model.Step }, (timerCmd audioService)
-            else 
-                model, Cmd.none
+        | SamplerToggled on ->
+            let cmd = 
+                if on then (startSamplingCmd audioSampler)
+                else (stopSamplingCmd audioSampler)
+            { model with SamplerOn = on }, cmd    
         | ShowError msg -> { model with ErrorMsg = Some msg }, Cmd.none
-        | AverageDbReading reading -> { model with Count = (int reading) }, Cmd.none
+        | ReceiveSample (SampleVolume sample) ->
+            let volume = int (20. * Math.Log10(sample))
+            { model with CurrentSample = (SampleVolume sample); Volume = volume }, Cmd.none
 
     let view (model: Model) dispatch =
         View.ContentPage(
           content = View.StackLayout(padding = 20.0, verticalOptions = LayoutOptions.Center,
             children = [
                 match model.ErrorMsg with Some msg -> yield View.Label(text = sprintf "ERROR: %s" msg, horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center) | _ -> ()
-                yield View.Label(text = sprintf "%d" model.Count, horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center)
-                //View.Button(text = "Increment", command = (fun () -> dispatch Increment), horizontalOptions = LayoutOptions.Center)
-                //View.Button(text = "Decrement", command = (fun () -> dispatch Decrement), horizontalOptions = LayoutOptions.Center)
+                yield View.Label(text = sprintf "%d" model.Volume, horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center)
                 yield View.Label(text = "Audio", horizontalOptions = LayoutOptions.Center)
-                yield View.Switch(isToggled = model.TimerOn, toggled = (fun on -> dispatch (TimerToggled on.Value)), horizontalOptions = LayoutOptions.Center)
-                //View.Slider(minimumMaximum = (0.0, 10.0), value = double model.Step, valueChanged = (fun args -> dispatch (SetStep (int (args.NewValue + 0.5)))), horizontalOptions = LayoutOptions.FillAndExpand)
-                //View.Label(text = sprintf "Step size: %d" model.Step, horizontalOptions = LayoutOptions.Center) 
+                yield View.Switch(isToggled = model.SamplerOn, toggled = (fun on -> dispatch (SamplerToggled on.Value)), horizontalOptions = LayoutOptions.Center)
                 yield View.Button(text = "Reset", horizontalOptions = LayoutOptions.Center, command = (fun () -> dispatch Reset), canExecute = (model <> initModel))
             ]))
 
-    // Note, this declaration is needed if you enable LiveUpdate
-    let program audioService = 
-        let _update = update audioService
+    let subscription (audioSampler: IAudioSampler) _ =
+        Cmd.ofSub (fun dispatch ->
+            audioSampler.OnSampleEvent.Publish
+                .Subscribe(fun volume -> dispatch (ReceiveSample volume))
+                |> ignore
+            )
+
+    let program audioSampler = 
+        let _update = update audioSampler
         Program.mkProgram init _update view
 
-type App (audioService: IAudioService) as app = 
+type App (audioSampler: IAudioSampler) as app = 
     inherit Application ()
 
     let runner = 
-        App.program audioService
+        App.program audioSampler
+        |> Program.withSubscription (App.subscription audioSampler)
 #if DEBUG
         |> Program.withConsoleTrace
 #endif

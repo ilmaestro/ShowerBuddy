@@ -7,7 +7,7 @@
 
 ## resources
 - <https://docs.microsoft.com/en-us/xamarin/android/app-fundamentals/android-audio#initializing-and-recording-1>
-
+- https://github.com/DieselMeister/perry-rhodan-audiobook-player/blob/master/PerryRhodan.AudiobookPlayer
 
 ## how to stream audio (android)
 
@@ -48,3 +48,22 @@ void RecordAudio()
 ```
 
 ## how to stream audio (ios)
+
+??
+
+## how to wire up events in fabulous
+
+- [Triggering Commands from External Events](https://fsprojects.github.io/Fabulous/Fabulous.XamarinForms/update.html)
+- program should subscribe to Sampler service
+
+```fsharp
+let subscribeToPushEvent dispatch = 
+     ...
+     call dispatch in some closure
+     ...
+
+let runner = 
+    Program.mkSimple App.init App.update App.view
+    |> Program.withSubscription (fun _ -> Cmd.ofSub subscribeToPushEvent)
+    |> Program.runWithDynamicView app
+```

@@ -1,14 +1,30 @@
 ﻿namespace ShowerBuddy.Android
+open ShowerBuddy.Domain
 open ShowerBuddy.Interfaces
 open Android.Media
 open System
 open System.Threading
 open Plugin.Permissions
 
+// TODO: https://github.com/tyorikan/voice-recording-visualizer/blob/master/visualizer/src/main/java/com/tyorikan/voicerecordingvisualizer/RecordingSampler.java
+type AudioService(bufferLength, samplingRate) =
 
-// TODO: https://stackoverflow.com/questions/49653692/startrecording-called-on-an-uninitialized-audiorecord
-type AudioService() =
+    let mutable isSampling = false
+    let mutable sampleBuffer = Array.zeroCreate<byte> bufferLength
+    let sampler = new AudioRecord(
+                    // source
+                    AudioSource.Mic,
+                    // frequency
+                    samplingRate,
+                    // channels
+                    ChannelIn.Mono,
+                    //encoding
+                    Encoding.Pcm16bit,
+                    // buffer size
+                    bufferLength
+                    )
 
+    let onSample = Event<SampleVolume>()
 
     member private this.CheckPermissions () = async {
         let! status = CrossPermissions.Current.CheckPermissionStatusAsync<MicrophonePermission>() |> Async.AwaitTask
@@ -19,44 +35,51 @@ type AudioService() =
         return result
         }
 
-    interface IAudioService with
-        member this.StartAnalyzer bufferLength analyzer cancellationToken = async {
+    interface IAudioSampler with
+        member this.OnSampleEvent with get () = onSample
+
+        member this.Start() = async {
             let! hasPermission = this.CheckPermissions()
-            if not hasPermission then failwith "Failed to get permission to microphone"
+            if not hasPermission then
+                return (Error "Failed to get permission to microphone")
+            else
+                if not isSampling then
+                    isSampling <- true
+                    sampler.StartRecording()
 
-            let mutable audioBuffer = Array.zeroCreate<int16> bufferLength
-            let recorder = new AudioRecord(
-                                // source
-                                AudioSource.Mic,
-                                // frequency
-                                11025,
-                                // channels
-                                ChannelIn.Mono,
-                                //encoding
-                                Encoding.Pcm16bit,
-                                // buffer size
-                                bufferLength
-                                )
+                    let rec recordLoop () = async {
+                        do! Async.Sleep 100 // delay
+                        try
+                            if isSampling then
+                                do! sampler.ReadAsync(sampleBuffer, 0, bufferLength) |> Async.AwaitTask |> Async.Ignore
 
-            recorder.StartRecording()
-            let dispose () = recorder.Release()
+                                // calculate average volume
+                                let volume = sampleBuffer |> Seq.averageBy (fun v -> Math.Abs(float v / 32768.))
 
-            let rec recordLoop () = async {
-                try
-                    cancellationToken.ThrowIfCancellationRequested()
-                    do! recorder.ReadAsync(audioBuffer, 0, bufferLength) |> Async.AwaitTask |> Async.Ignore
-                    
-                    analyzer audioBuffer
+                                onSample.Trigger(SampleVolume volume)
 
-                    return! recordLoop ()
-                with
-                | :? OperationCanceledException ->
-                    dispose ()
-                    return Ok ()
-                | _ as ex ->
-                    dispose ()
-                    return Error (ex.Message)
-                }
+                                return! recordLoop ()
+                            else
+                                return Ok()
+                        with
+                        | ex ->
+                            return Error (ex.Message)
+                        }
        
-            return! recordLoop ()
+                    return! recordLoop ()
+                else
+                    return (Error "already recording")
             }
+    
+        member this.Stop() =
+            if isSampling then
+                sampler.Stop()
+                isSampling <- false
+                Ok ()
+            else
+                Error "not recording"
+    
+        member this.Release() =
+            if isSampling then sampler.Stop()
+            sampler.Release()
+            Ok ()
