@@ -41,8 +41,8 @@ module App =
             let! output = audioService.StartAnalyzer 100_000 collector (cancellationSource.Token)
             match output with
             | Ok () ->
-                let reading = samples.ToArray() |> AudioAnalyzer.averageDecibel
-                return AverageDbReading reading
+                let reading = samples |> Seq.sum
+                return AverageDbReading (float reading)
             | Error msg ->
                 return ShowError msg
             }

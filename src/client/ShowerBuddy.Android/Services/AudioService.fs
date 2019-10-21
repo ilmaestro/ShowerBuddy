@@ -3,13 +3,27 @@ open ShowerBuddy.Interfaces
 open Android.Media
 open System
 open System.Threading
+open Plugin.Permissions
 
 
 // TODO: https://stackoverflow.com/questions/49653692/startrecording-called-on-an-uninitialized-audiorecord
 type AudioService() =
 
+
+    member private this.CheckPermissions () = async {
+        let! status = CrossPermissions.Current.CheckPermissionStatusAsync<MicrophonePermission>() |> Async.AwaitTask
+        let mutable result = true
+        if not <| (status = Plugin.Permissions.Abstractions.PermissionStatus.Granted) then
+            let! request = CrossPermissions.Current.RequestPermissionAsync<MicrophonePermission>() |> Async.AwaitTask
+            result <- request = Plugin.Permissions.Abstractions.PermissionStatus.Granted
+        return result
+        }
+
     interface IAudioService with
         member this.StartAnalyzer bufferLength analyzer cancellationToken = async {
+            let! hasPermission = this.CheckPermissions()
+            if not hasPermission then failwith "Failed to get permission to microphone"
+
             let mutable audioBuffer = Array.zeroCreate<int16> bufferLength
             let recorder = new AudioRecord(
                                 // source

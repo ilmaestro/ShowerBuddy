@@ -19,6 +19,8 @@ type MainActivity() =
         FormsAppCompatActivity.TabLayoutResource <- Resources.Layout.Tabbar
         FormsAppCompatActivity.ToolbarResource <- Resources.Layout.Toolbar
         base.OnCreate (bundle)
+        
+        Plugin.CurrentActivity.CrossCurrentActivity.Current.Init(this, bundle)
 
         Xamarin.Essentials.Platform.Init(this, bundle)
 
