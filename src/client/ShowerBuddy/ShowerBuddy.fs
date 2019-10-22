@@ -12,6 +12,7 @@ open System.Collections.Generic
 open System
 
 module App = 
+
     type Model = 
       { Volume          : int
         CurrentSample   : SampleVolume
@@ -24,7 +25,7 @@ module App =
         | ReceiveSample of SampleVolume
         | ShowError of string
 
-    let initModel = { Volume = 0; CurrentSample = SampleVolume 0.; SamplerOn = false; ErrorMsg = None }
+    let initModel = { Volume = 0; CurrentSample = SampleVolume 0.;  SamplerOn = false; ErrorMsg = None }
 
     let init () = initModel, Cmd.none
     let mutable isSampling = false
@@ -65,24 +66,40 @@ module App =
             { model with SamplerOn = on }, cmd    
         | ShowError msg -> { model with ErrorMsg = Some msg }, Cmd.none
         | ReceiveSample (SampleVolume sample) ->
-            let volume = int (20. * Math.Log10(sample))
-            { model with CurrentSample = (SampleVolume sample); Volume = volume }, Cmd.none
+            let dB = int (20. * Math.Log10(sample))
+            { model with CurrentSample = (SampleVolume sample); Volume = dB }, Cmd.none
 
     let view (model: Model) dispatch =
         View.ContentPage(
           content = View.StackLayout(padding = 20.0, verticalOptions = LayoutOptions.Center,
             children = [
+                if model.Volume > -46
+                then yield View.Label(text = "SHOWER IS ON!", horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center, textColor = Color.Red)
                 match model.ErrorMsg with Some msg -> yield View.Label(text = sprintf "ERROR: %s" msg, horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center) | _ -> ()
+                yield View.Label(text = "Audio Volume", horizontalOptions = LayoutOptions.Center)
                 yield View.Label(text = sprintf "%d" model.Volume, horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center)
-                yield View.Label(text = "Audio", horizontalOptions = LayoutOptions.Center)
+                yield View.Label(text = sprintf "%A" model.CurrentSample, horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center)
                 yield View.Switch(isToggled = model.SamplerOn, toggled = (fun on -> dispatch (SamplerToggled on.Value)), horizontalOptions = LayoutOptions.Center)
-                yield View.Button(text = "Reset", horizontalOptions = LayoutOptions.Center, command = (fun () -> dispatch Reset), canExecute = (model <> initModel))
+                //yield View.Button(text = "Reset", horizontalOptions = LayoutOptions.Center, command = (fun () -> dispatch Reset), canExecute = (model <> initModel))
             ]))
 
     let subscription (audioSampler: IAudioSampler) _ =
         Cmd.ofSub (fun dispatch ->
+            let bufferSize = 100
+            let buffer = Array.zeroCreate<float> bufferSize
+            let mutable bufferIndex = 0
             audioSampler.OnSampleEvent.Publish
-                .Subscribe(fun volume -> dispatch (ReceiveSample volume))
+                .Subscribe(fun (SampleVolume sample) ->
+                    if bufferIndex < bufferSize then
+                        buffer.[bufferIndex] <- sample
+                    else
+                        bufferIndex <- 0
+                        let avg = Array.average buffer
+                        dispatch (ReceiveSample (SampleVolume avg))
+                        buffer.[bufferIndex] <- sample
+                        
+                    bufferIndex <- bufferIndex + 1
+                    )
                 |> ignore
             )
 

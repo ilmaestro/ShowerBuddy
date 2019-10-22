@@ -26,7 +26,7 @@ type MainActivity() =
 
         Xamarin.Forms.Forms.Init (this, bundle)
 
-        let appcore  = new ShowerBuddy.App(AudioService(10_000, 11024))
+        let appcore  = new ShowerBuddy.App(MicrophoneSampler())
         this.LoadApplication (appcore)
 
     override this.OnRequestPermissionsResult(requestCode: int, permissions: string[], [<GeneratedEnum>] grantResults: Android.Content.PM.Permission[]) =

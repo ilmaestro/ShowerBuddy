@@ -1,9 +1,10 @@
 ﻿namespace ShowerBuddy.iOS
 
 open ShowerBuddy.Interfaces
+open ShowerBuddy.Domain
 
 type AudioService() =
-    let onSample = Event<byte[]>()
+    let onSample = Event<SampleVolume>()
 
     interface IAudioSampler with
         member this.OnSampleEvent with get () = onSample
@@ -13,9 +14,3 @@ type AudioService() =
             }
         member this.Stop() = Ok ()
         member this.Release() = Ok ()
-
-    interface IAudioService with
-        member this.StartAnalyzer bufferLength analyzer cancellationToken = async {
-            do! Async.Sleep 100
-            return Ok ()
-            }

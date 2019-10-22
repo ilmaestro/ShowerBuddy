@@ -7,24 +7,38 @@ open System.Threading
 open Plugin.Permissions
 
 // TODO: https://github.com/tyorikan/voice-recording-visualizer/blob/master/visualizer/src/main/java/com/tyorikan/voicerecordingvisualizer/RecordingSampler.java
-type AudioService(bufferLength, samplingRate) =
+type MicrophoneSampler() =
 
-    let mutable isSampling = false
-    let mutable sampleBuffer = Array.zeroCreate<byte> bufferLength
-    let sampler = new AudioRecord(
-                    // source
-                    AudioSource.Mic,
-                    // frequency
-                    samplingRate,
-                    // channels
-                    ChannelIn.Mono,
-                    //encoding
-                    Encoding.Pcm16bit,
-                    // buffer size
-                    bufferLength
-                    )
-
+    let samplingRate = 44100
+    let conversionFactor = 32768.0 // based on 16bit
+    let bufferSize = AudioRecord.GetMinBufferSize(samplingRate, ChannelIn.Mono, Encoding.Pcm16bit)
+    let mutable sampleBuffer = Array.zeroCreate<byte> bufferSize
+    let sampler = new AudioRecord(AudioSource.Default, samplingRate, ChannelIn.Mono, Encoding.Pcm16bit, bufferSize)
     let onSample = Event<SampleVolume>()
+    let mutable isSampling = false
+
+    let bufferAnalyzer _ buffer =
+        buffer 
+        |> Seq.averageBy (fun v -> Math.Abs(float v / conversionFactor))
+        |> SampleVolume
+
+    // https://stackoverflow.com/questions/7955041/voice-detection-in-android-application/7976877#7976877
+    let voiceAnalyzer bytesRead (buffer : byte[]) =
+        let samples = seq { 
+            for i in 0 .. bytesRead - 1 .. 2 ->
+                int16((buffer.[i + 1] <<< 8) ||| buffer.[i])
+            }
+
+        let peak =
+            samples
+            |> Seq.map (fun sample -> Math.Abs(float sample / conversionFactor))
+            |> Seq.max
+                //let total = Math.Abs(float sample) / (float bytesRead / 2.)
+                //total
+                //temp * temp
+                //)
+
+        SampleVolume peak // (peak / (float bytesRead / 2.))
 
     member private this.CheckPermissions () = async {
         let! status = CrossPermissions.Current.CheckPermissionStatusAsync<MicrophonePermission>() |> Async.AwaitTask
@@ -48,16 +62,11 @@ type AudioService(bufferLength, samplingRate) =
                     sampler.StartRecording()
 
                     let rec recordLoop () = async {
-                        do! Async.Sleep 100 // delay
+                        //do! Async.Sleep 100 // delay
                         try
                             if isSampling then
-                                do! sampler.ReadAsync(sampleBuffer, 0, bufferLength) |> Async.AwaitTask |> Async.Ignore
-
-                                // calculate average volume
-                                let volume = sampleBuffer |> Seq.averageBy (fun v -> Math.Abs(float v / 32768.))
-
-                                onSample.Trigger(SampleVolume volume)
-
+                                let! numberOfBytesRead = sampler.ReadAsync(sampleBuffer, 0, bufferSize) |> Async.AwaitTask
+                                onSample.Trigger(voiceAnalyzer numberOfBytesRead sampleBuffer)
                                 return! recordLoop ()
                             else
                                 return Ok()
