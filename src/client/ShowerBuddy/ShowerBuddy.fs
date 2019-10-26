@@ -16,50 +16,47 @@ module App =
 
     type Model = 
       { Volume          : int
-        CurrentSample   : SampleVolume
-        SamplerOn       : bool
-        ShowerOnVolume  : int
+        Noise           : int
+        CurrentSample   : VolumeSample
+        SamplingState   : SamplingState
+        CountdownTime   : TimeSpan
         TotalWaterTime  : TimeSpan
         TotalShowerTime : TimeSpan
         ErrorMsg        : string option }
 
     with 
-        member this.ShowerOn = this.Volume > this.ShowerOnVolume
+        member this.ShowerOn = this.Volume - this.Noise >= 3 // if the volume is more than 3dB above the noise
         member this.WaterUsage = this.TotalWaterTime.TotalMinutes * 2.5 // assuming 2.5 gallons per minute
 
     type Msg = 
         | Reset
         | TimerTick of TimeSpan
-        | SamplerToggled of bool
-        | ReceiveSample of SampleVolume
+        | Enable of bool
+        | ReceiveSample of VolumeSample
         | ShowError of string
 
     let initModel = {
         Volume = -100
-        CurrentSample = SampleVolume -100.
-        SamplerOn = false
-        ShowerOnVolume = -46
+        Noise = -100
+        CurrentSample = VolumeSample -100.
+        SamplingState = Off
+        CountdownTime = TimeSpan.FromMilliseconds(0.)
         TotalWaterTime = TimeSpan.FromMilliseconds(0.)
         TotalShowerTime = TimeSpan.FromMilliseconds(0.)
         ErrorMsg = None }
 
     let init () = initModel, Cmd.none
-    let mutable isSampling = false
 
     let startSamplingCmd (audioSampler: IAudioSampler) =
         Cmd.ofAsyncMsgOption (async {
-            if not isSampling then
-                isSampling <- true
-                do! Async.SwitchToThreadPool()
-                let! result = audioSampler.Start()
-                let msg =
-                    match result with
-                    | Ok () -> None
-                    | Error message -> Some (ShowError message)
+            do! Async.SwitchToThreadPool()
+            let! result = audioSampler.Start()
+            let msg =
+                match result with
+                | Ok () -> None
+                | Error message -> Some (ShowError message)
 
-                return msg
-            else
-                return None
+            return msg
         })
 
     let stopSamplingCmd (audioSampler: IAudioSampler) =
@@ -68,7 +65,6 @@ module App =
                 match audioSampler.Stop() with
                 | Ok () -> None
                 | Error message -> Some (ShowError message)
-            isSampling <- false
             return msg
         })
 
@@ -76,27 +72,43 @@ module App =
         match msg with
         | Reset -> init ()
         | TimerTick tick ->
-            match model.SamplerOn, model.ShowerOn with
-            | true,true ->
+            match model.SamplingState, model.ShowerOn with
+            | SampleVolume, true ->
                 {model with TotalShowerTime = model.TotalShowerTime + tick; TotalWaterTime = model.TotalWaterTime + tick}, Cmd.none
-            | true,false ->
-                {model with TotalShowerTime = model.TotalShowerTime + tick;}, Cmd.none
-            | false,_ -> model, Cmd.none
-        | SamplerToggled on ->
-            let cmd = 
-                if on then (startSamplingCmd audioSampler)
-                else (stopSamplingCmd audioSampler)
-            { model with SamplerOn = on }, cmd    
+            | SampleVolume, false ->
+                // only count shower time after its been incremented (by shower turning on)
+                if model.TotalShowerTime.TotalSeconds > 0.
+                then {model with TotalShowerTime = model.TotalShowerTime + tick}, Cmd.none
+                else model, Cmd.none
+            | SampleNoise, _ ->
+                {model with CountdownTime = model.CountdownTime - tick}, Cmd.none
+            | _, _ -> model, Cmd.none
+        | Enable true ->
+            { initModel with  // use init model to reset
+                SamplingState = SampleNoise;
+                CountdownTime = TimeSpan.FromSeconds(10.);
+                }, (startSamplingCmd audioSampler)
+        | Enable false ->
+            { model with SamplingState = Off; CountdownTime = TimeSpan.FromSeconds(0.) }, (stopSamplingCmd audioSampler)
         | ShowError msg -> { model with ErrorMsg = Some msg }, Cmd.none
-        | ReceiveSample (SampleVolume sample) ->
+        | ReceiveSample (VolumeSample sample) ->
             let dB = int (20. * Math.Log10(sample))
-            { model with CurrentSample = (SampleVolume sample); Volume = dB }, Cmd.none
+            match model.SamplingState with
+            | SampleNoise ->
+                let nextState = if model.CountdownTime.TotalSeconds > 0. then SampleNoise else SampleVolume
+                let averageNoise = (dB + model.Noise) / 2
+                { model with SamplingState = nextState; CurrentSample = (VolumeSample sample); Noise = averageNoise }, Cmd.none
+            | SampleVolume ->
+                let averageVolume = (dB + model.Volume) / 2
+                { model with CurrentSample = (VolumeSample sample); Volume = averageVolume }, Cmd.none
+            | Off ->
+                model, Cmd.none
 
     let displayTimespan prefix (timespan : TimeSpan) =
         sprintf "%s: %s" prefix (timespan.ToString("mm\:ss\.ff"))
 
     let displayGallons prefix (model : Model) =
-        sprintf "%s: %sg" prefix (model.WaterUsage.ToString("#,#00.00"))
+        sprintf "%s: %s gal" prefix (model.WaterUsage.ToString("#,#00.00"))
 
     let view (model: Model) dispatch =
         View.ContentPage(
@@ -111,26 +123,28 @@ module App =
                 match model.ErrorMsg with Some msg -> yield View.Label(text = sprintf "ERROR: %s" msg, horizontalOptions = LayoutOptions.StartAndExpand, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Start) | _ -> ()
 
                 // Labels
-                yield View.Label(text = sprintf "Audio Volume: %d" model.Volume, horizontalOptions = LayoutOptions.StartAndExpand, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Start)
+                yield View.Label(text = sprintf "Volume: %i" model.Volume, horizontalOptions = LayoutOptions.StartAndExpand, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Start)
+                yield View.Label(text = sprintf "Noise: %i" model.Noise, horizontalOptions = LayoutOptions.StartAndExpand, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Start)
                 //yield View.Label(text = sprintf "%A" model.CurrentSample, horizontalOptions = LayoutOptions.StartAndExpand, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Start)
-                yield View.Switch(isToggled = model.SamplerOn, toggled = (fun on -> dispatch (SamplerToggled on.Value)), horizontalOptions = LayoutOptions.Start)
+                yield View.Switch(isToggled = (model.SamplingState <> Off), toggled = (fun on -> dispatch (Enable on.Value)), horizontalOptions = LayoutOptions.Start)
                 //yield View.Button(text = "Reset", horizontalOptions = LayoutOptions.Center, command = (fun () -> dispatch Reset), canExecute = (model <> initModel))
             ]))
 
     let subscription (audioSampler: IAudioSampler) _ =
         Cmd.ofSub (fun dispatch ->
             do
+                // buffer the buffer!
                 let bufferSize = 50
                 let buffer = Array.zeroCreate<float> bufferSize
                 let mutable bufferIndex = 0
                 audioSampler.OnSampleEvent.Publish
-                    .Subscribe(fun (SampleVolume sample) ->
+                    .Subscribe(fun (VolumeSample sample) ->
                         if bufferIndex < bufferSize then
                             buffer.[bufferIndex] <- sample
                         else
                             bufferIndex <- 0
                             let avg = Array.average buffer
-                            dispatch (ReceiveSample (SampleVolume avg))
+                            dispatch (ReceiveSample (VolumeSample avg))
                             buffer.[bufferIndex] <- sample
                         
                         bufferIndex <- bufferIndex + 1

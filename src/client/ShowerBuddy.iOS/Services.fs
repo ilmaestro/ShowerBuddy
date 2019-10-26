@@ -4,7 +4,7 @@ open ShowerBuddy.Interfaces
 open ShowerBuddy.Domain
 
 type AudioService() =
-    let onSample = Event<SampleVolume>()
+    let onSample = Event<VolumeSample>()
 
     interface IAudioSampler with
         member this.OnSampleEvent with get () = onSample

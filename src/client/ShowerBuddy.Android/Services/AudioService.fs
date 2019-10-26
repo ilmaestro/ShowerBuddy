@@ -14,13 +14,8 @@ type MicrophoneSampler() =
     let bufferSize = AudioRecord.GetMinBufferSize(samplingRate, ChannelIn.Mono, Encoding.Pcm16bit)
     let mutable sampleBuffer = Array.zeroCreate<byte> bufferSize
     let sampler = new AudioRecord(AudioSource.Default, samplingRate, ChannelIn.Mono, Encoding.Pcm16bit, bufferSize)
-    let onSample = Event<SampleVolume>()
+    let onSample = Event<VolumeSample>()
     let mutable isSampling = false
-
-    let bufferAnalyzer _ buffer =
-        buffer 
-        |> Seq.averageBy (fun v -> Math.Abs(float v / conversionFactor))
-        |> SampleVolume
 
     // https://stackoverflow.com/questions/7955041/voice-detection-in-android-application/7976877#7976877
     let voiceAnalyzer bytesRead (buffer : byte[]) =
@@ -28,17 +23,10 @@ type MicrophoneSampler() =
             for i in 0 .. bytesRead - 1 .. 2 ->
                 int16((buffer.[i + 1] <<< 8) ||| buffer.[i])
             }
-
-        let peak =
-            samples
-            |> Seq.map (fun sample -> Math.Abs(float sample / conversionFactor))
-            |> Seq.max
-                //let total = Math.Abs(float sample) / (float bytesRead / 2.)
-                //total
-                //temp * temp
-                //)
-
-        SampleVolume peak // (peak / (float bytesRead / 2.))
+        samples
+        |> Seq.map (fun sample -> Math.Abs(float sample / conversionFactor))
+        |> Seq.max
+        |> VolumeSample
 
     member private this.CheckPermissions () = async {
         let! status = CrossPermissions.Current.CheckPermissionStatusAsync<MicrophonePermission>() |> Async.AwaitTask
@@ -64,9 +52,9 @@ type MicrophoneSampler() =
                     let rec recordLoop () = async {
                         //do! Async.Sleep 100 // delay
                         try
-                            if isSampling then
+                            if isSampling && sampler.State = State.Initialized then
                                 let! numberOfBytesRead = sampler.ReadAsync(sampleBuffer, 0, bufferSize) |> Async.AwaitTask
-                                onSample.Trigger(voiceAnalyzer numberOfBytesRead sampleBuffer)
+                                if numberOfBytesRead > 0 then onSample.Trigger(voiceAnalyzer numberOfBytesRead sampleBuffer)
                                 return! recordLoop ()
                             else
                                 return Ok()
@@ -82,8 +70,8 @@ type MicrophoneSampler() =
     
         member this.Stop() =
             if isSampling then
-                sampler.Stop()
                 isSampling <- false
+                sampler.Stop()
                 Ok ()
             else
                 Error "not recording"
