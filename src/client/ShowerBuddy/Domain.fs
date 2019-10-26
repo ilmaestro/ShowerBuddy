@@ -7,8 +7,12 @@ type BufferLength = int32
 type AudioBufferAnalyzer = AudioBuffer -> unit
 type AudioAnalyzer<'T> = AudioBuffer -> 'T
 type SampleVolume = SampleVolume of float
+
+type AudioResult =
+    | Average of float
+    | Peak of float
+
 module AudioAnalyzer =
     let dB (amplitude : int16) = Math.Log10(Math.Abs((float)amplitude))
 
     let averageDecibel: AudioAnalyzer<float> = Array.averageBy dB
-

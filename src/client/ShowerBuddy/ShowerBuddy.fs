@@ -10,6 +10,7 @@ open ShowerBuddy.Interfaces
 open ShowerBuddy.Domain
 open System.Collections.Generic
 open System
+open System.Timers
 
 module App = 
 
@@ -17,15 +18,17 @@ module App =
       { Volume          : int
         CurrentSample   : SampleVolume
         SamplerOn       : bool
+        TotalShowerTime : TimeSpan
         ErrorMsg        : string option }
 
     type Msg = 
         | Reset
+        | TimerTick of TimeSpan
         | SamplerToggled of bool
         | ReceiveSample of SampleVolume
         | ShowError of string
 
-    let initModel = { Volume = 0; CurrentSample = SampleVolume 0.;  SamplerOn = false; ErrorMsg = None }
+    let initModel = { Volume = -100; CurrentSample = SampleVolume -100.;  SamplerOn = false; TotalShowerTime = TimeSpan.FromMilliseconds(0.); ErrorMsg = None }
 
     let init () = initModel, Cmd.none
     let mutable isSampling = false
@@ -59,6 +62,10 @@ module App =
     let update (audioSampler: IAudioSampler) msg model =
         match msg with
         | Reset -> init ()
+        | TimerTick tick ->
+            if model.Volume > -46 then
+                {model with TotalShowerTime = model.TotalShowerTime + tick}, Cmd.none
+            else model, Cmd.none
         | SamplerToggled on ->
             let cmd = 
                 if on then (startSamplingCmd audioSampler)
@@ -73,9 +80,14 @@ module App =
         View.ContentPage(
           content = View.StackLayout(padding = 20.0, verticalOptions = LayoutOptions.Center,
             children = [
-                if model.Volume > -46
-                then yield View.Label(text = "SHOWER IS ON!", horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center, textColor = Color.Red)
+                yield View.Label(text = "Shower Time", horizontalOptions = LayoutOptions.Center)
+                yield View.Label(text = (sprintf "%i:%i.%i" model.TotalShowerTime.Minutes model.TotalShowerTime.Seconds model.TotalShowerTime.Milliseconds), horizontalOptions = LayoutOptions.StartAndExpand, horizontalTextAlignment = TextAlignment.Center)
+                // Shower Alert
+                if model.Volume > -46 then yield View.Label(text = "SHOWER IS ON!", horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center, textColor = Color.Red)
+                // error message
                 match model.ErrorMsg with Some msg -> yield View.Label(text = sprintf "ERROR: %s" msg, horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center) | _ -> ()
+
+                // Labels
                 yield View.Label(text = "Audio Volume", horizontalOptions = LayoutOptions.Center)
                 yield View.Label(text = sprintf "%d" model.Volume, horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center)
                 yield View.Label(text = sprintf "%A" model.CurrentSample, horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center)
@@ -85,22 +97,29 @@ module App =
 
     let subscription (audioSampler: IAudioSampler) _ =
         Cmd.ofSub (fun dispatch ->
-            let bufferSize = 100
-            let buffer = Array.zeroCreate<float> bufferSize
-            let mutable bufferIndex = 0
-            audioSampler.OnSampleEvent.Publish
-                .Subscribe(fun (SampleVolume sample) ->
-                    if bufferIndex < bufferSize then
-                        buffer.[bufferIndex] <- sample
-                    else
-                        bufferIndex <- 0
-                        let avg = Array.average buffer
-                        dispatch (ReceiveSample (SampleVolume avg))
-                        buffer.[bufferIndex] <- sample
+            do
+                let bufferSize = 100
+                let buffer = Array.zeroCreate<float> bufferSize
+                let mutable bufferIndex = 0
+                audioSampler.OnSampleEvent.Publish
+                    .Subscribe(fun (SampleVolume sample) ->
+                        if bufferIndex < bufferSize then
+                            buffer.[bufferIndex] <- sample
+                        else
+                            bufferIndex <- 0
+                            let avg = Array.average buffer
+                            dispatch (ReceiveSample (SampleVolume avg))
+                            buffer.[bufferIndex] <- sample
                         
-                    bufferIndex <- bufferIndex + 1
-                    )
-                |> ignore
+                        bufferIndex <- bufferIndex + 1
+                        )
+                    |> ignore
+            do
+                let tick = TimeSpan.FromMilliseconds(100.)
+                let timer = new Timer(tick.TotalMilliseconds)
+                timer.Elapsed.Subscribe(fun _ -> dispatch (TimerTick tick)) |> ignore
+                timer.Enabled <- true
+                timer.Start()
             )
 
     let program audioSampler = 
