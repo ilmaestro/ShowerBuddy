@@ -18,8 +18,14 @@ module App =
       { Volume          : int
         CurrentSample   : SampleVolume
         SamplerOn       : bool
+        ShowerOnVolume  : int
+        TotalWaterTime  : TimeSpan
         TotalShowerTime : TimeSpan
         ErrorMsg        : string option }
+
+    with 
+        member this.ShowerOn = this.Volume > this.ShowerOnVolume
+        member this.WaterUsage = this.TotalWaterTime.TotalMinutes * 2.5 // assuming 2.5 gallons per minute
 
     type Msg = 
         | Reset
@@ -28,7 +34,14 @@ module App =
         | ReceiveSample of SampleVolume
         | ShowError of string
 
-    let initModel = { Volume = -100; CurrentSample = SampleVolume -100.;  SamplerOn = false; TotalShowerTime = TimeSpan.FromMilliseconds(0.); ErrorMsg = None }
+    let initModel = {
+        Volume = -100
+        CurrentSample = SampleVolume -100.
+        SamplerOn = false
+        ShowerOnVolume = -46
+        TotalWaterTime = TimeSpan.FromMilliseconds(0.)
+        TotalShowerTime = TimeSpan.FromMilliseconds(0.)
+        ErrorMsg = None }
 
     let init () = initModel, Cmd.none
     let mutable isSampling = false
@@ -59,13 +72,16 @@ module App =
             return msg
         })
 
-    let update (audioSampler: IAudioSampler) msg model =
+    let update (audioSampler: IAudioSampler) msg (model : Model)=
         match msg with
         | Reset -> init ()
         | TimerTick tick ->
-            if model.Volume > -46 then
-                {model with TotalShowerTime = model.TotalShowerTime + tick}, Cmd.none
-            else model, Cmd.none
+            match model.SamplerOn, model.ShowerOn with
+            | true,true ->
+                {model with TotalShowerTime = model.TotalShowerTime + tick; TotalWaterTime = model.TotalWaterTime + tick}, Cmd.none
+            | true,false ->
+                {model with TotalShowerTime = model.TotalShowerTime + tick;}, Cmd.none
+            | false,_ -> model, Cmd.none
         | SamplerToggled on ->
             let cmd = 
                 if on then (startSamplingCmd audioSampler)
@@ -76,29 +92,35 @@ module App =
             let dB = int (20. * Math.Log10(sample))
             { model with CurrentSample = (SampleVolume sample); Volume = dB }, Cmd.none
 
+    let displayTimespan prefix (timespan : TimeSpan) =
+        sprintf "%s: %s" prefix (timespan.ToString("mm\:ss\.ff"))
+
+    let displayGallons prefix (model : Model) =
+        sprintf "%s: %sg" prefix (model.WaterUsage.ToString("#,#00.00"))
+
     let view (model: Model) dispatch =
         View.ContentPage(
-          content = View.StackLayout(padding = 20.0, verticalOptions = LayoutOptions.Center,
+          content = View.StackLayout(padding = 20.0, verticalOptions = LayoutOptions.StartAndExpand,
             children = [
-                yield View.Label(text = "Shower Time", horizontalOptions = LayoutOptions.Center)
-                yield View.Label(text = (sprintf "%i:%i.%i" model.TotalShowerTime.Minutes model.TotalShowerTime.Seconds model.TotalShowerTime.Milliseconds), horizontalOptions = LayoutOptions.StartAndExpand, horizontalTextAlignment = TextAlignment.Center)
+                yield View.Label(text = displayTimespan "Shower Time" model.TotalShowerTime, horizontalOptions = LayoutOptions.StartAndExpand, widthRequest=200.0, horizontalTextAlignment = TextAlignment.Start)
+                yield View.Label(text = displayTimespan "Water Time" model.TotalWaterTime, horizontalOptions = LayoutOptions.StartAndExpand, widthRequest=200.0, horizontalTextAlignment = TextAlignment.Start)
+                yield View.Label(text = displayGallons "Water Usage" model, horizontalOptions = LayoutOptions.StartAndExpand, widthRequest=200.0, horizontalTextAlignment = TextAlignment.Start)
                 // Shower Alert
-                if model.Volume > -46 then yield View.Label(text = "SHOWER IS ON!", horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center, textColor = Color.Red)
+                if model.ShowerOn then yield View.Label(text = "SHOWER IS ON!", horizontalOptions = LayoutOptions.StartAndExpand, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Start, textColor = Color.Red)
                 // error message
-                match model.ErrorMsg with Some msg -> yield View.Label(text = sprintf "ERROR: %s" msg, horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center) | _ -> ()
+                match model.ErrorMsg with Some msg -> yield View.Label(text = sprintf "ERROR: %s" msg, horizontalOptions = LayoutOptions.StartAndExpand, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Start) | _ -> ()
 
                 // Labels
-                yield View.Label(text = "Audio Volume", horizontalOptions = LayoutOptions.Center)
-                yield View.Label(text = sprintf "%d" model.Volume, horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center)
-                yield View.Label(text = sprintf "%A" model.CurrentSample, horizontalOptions = LayoutOptions.Center, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Center)
-                yield View.Switch(isToggled = model.SamplerOn, toggled = (fun on -> dispatch (SamplerToggled on.Value)), horizontalOptions = LayoutOptions.Center)
+                yield View.Label(text = sprintf "Audio Volume: %d" model.Volume, horizontalOptions = LayoutOptions.StartAndExpand, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Start)
+                //yield View.Label(text = sprintf "%A" model.CurrentSample, horizontalOptions = LayoutOptions.StartAndExpand, widthRequest=200.0, horizontalTextAlignment=TextAlignment.Start)
+                yield View.Switch(isToggled = model.SamplerOn, toggled = (fun on -> dispatch (SamplerToggled on.Value)), horizontalOptions = LayoutOptions.Start)
                 //yield View.Button(text = "Reset", horizontalOptions = LayoutOptions.Center, command = (fun () -> dispatch Reset), canExecute = (model <> initModel))
             ]))
 
     let subscription (audioSampler: IAudioSampler) _ =
         Cmd.ofSub (fun dispatch ->
             do
-                let bufferSize = 100
+                let bufferSize = 50
                 let buffer = Array.zeroCreate<float> bufferSize
                 let mutable bufferIndex = 0
                 audioSampler.OnSampleEvent.Publish
